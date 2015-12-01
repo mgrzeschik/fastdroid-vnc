@@ -97,14 +97,13 @@ static char TOUCH_DEVICE[PATH_MAX] = "/dev/input/event1";
 #endif
 
 static struct fb_var_screeninfo scrinfo;
-static int buffers = 2; /* mmap 2 buffers for android */
+static int buffers = 1;		/* mmap 2 buffers for android */
 static int fbfd = -1;
 static int kbdfd = -1;
 static int touchfd = -1;
 static unsigned short int *fbmmap = MAP_FAILED;
 static unsigned short int *vncbuf;
 static unsigned short int *fbbuf;
-static int pixels_per_int;
 
 __sighandler_t old_sigint_handler = NULL;
 
@@ -317,6 +316,7 @@ void injectKeyEvent(uint16_t code, uint16_t value)
 static int keysym2scancode(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 {
     int scancode = 0;
+    (void) down;
 
     int code = (int) key;
     if (code>='0' && code<='9') {
@@ -442,6 +442,8 @@ void injectTouchEvent(int down, int x, int y)
 
 static void ptrevent(int buttonMask, int x, int y, rfbClientPtr cl)
 {
+	(void) cl;
+
 	/* Indicates either pointer movement or a pointer button press or release. The pointer is
 now at (x-position, y-position), and the current state of buttons 1 to 8 are represented
 by bits 0 to 7 of button-mask respectively, 0 meaning up, 1 meaning down (pressed).
@@ -564,6 +566,7 @@ void blank_framebuffer()
 
 void print_usage(char **argv)
 {
+	(void) argv;
 	pr_info("%s [-k device] [-t device] [-h]\n"
 		"-k device: keyboard device node, default is %s\n"
 		"-t device: touch device node, default is %s\n"

@@ -19,22 +19,8 @@ Modified by Danke Xie (danke.xie@gmail.com)
 	- Supports Android framebuffer double buffering
 	- Performance boost and fix GCC warnings in libvncserver-0.9.7
 
-ANDROID INSTALL
-===============
-
-Copy the directory fastdroid-vnc to any Android build directory, run
-a build command from Android root
-  $ make -j4 fastdroid-vnc
-
-Push the binary to the device
-  $ adb push system/bin/fastdroid-vnc /data/
-  
-Modify file permission and run
-  $ adb shell
-  # cd /data
-  # chmod 777 fastdroid-vnc
-  # ./fastdroid-vnc
-  
+Modified by Michael Grzeschik (mgr@pengutronix.de)
+	- moved to autotools and removed android support
 
 LINUX BUILD
 ===========
@@ -42,6 +28,8 @@ To make a linux build, one can use the linux Makefile instead of the above
 Android steps, and the Android makefile Android.mk.
 
 Run make under the fastdroid-vnc directory
+  $ ./autogen.sh
+  $ ./configure
   $ make
 
 The executable file fastdroid-vnc will be in the same directory.
