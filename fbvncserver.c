@@ -100,12 +100,20 @@ static char TOUCH_DEVICE[PATH_MAX] = "/dev/input/event1";
 
 static struct fb_var_screeninfo scrinfo;
 static int buffers = 1;		/* mmap 2 buffers for android */
+static int xres;
+static int yres;
+int xres_virtual;
+int yres_virtual;
+int xoffset;
+int yoffset;
+static int rotation;
 static int fbfd = -1;
 static int kbdfd = -1;
 static int touchfd = -1;
 static unsigned short int *fbmmap = MAP_FAILED;
 static unsigned short int *vncbuf;
 static unsigned short int *fbbuf;
+static unsigned short int *fb;
 
 __sighandler_t old_sigint_handler = NULL;
 
@@ -167,16 +175,34 @@ init_fb(void)
 		exit(EXIT_FAILURE);
 	}
 
-	pixels = scrinfo.xres * scrinfo.yres;
+	xres = scrinfo.xres;
+	yres = scrinfo.yres;
+
+	xres_virtual = scrinfo.xres_virtual;
+	yres_virtual = scrinfo.yres_virtual;
+
+	xoffset = scrinfo.xoffset;
+	yoffset = scrinfo.yoffset;
+
+	if (rotation == 1 || rotation == 3) {
+		xres = scrinfo.yres;
+		yres = scrinfo.xres;
+		xres_virtual = scrinfo.yres_virtual;
+		yres_virtual = scrinfo.xres_virtual;
+		xoffset = scrinfo.yoffset;
+		yoffset = scrinfo.xoffset;
+	}
+
+	pixels = xres * yres;
 	bytespp = scrinfo.bits_per_pixel / 8;
 
 	pr_info("xres=%d, yres=%d, "
 		"xresv=%d, yresv=%d, "
 		"xoffs=%d, yoffs=%d, "
 		"bpp=%d\n",
-		(int) scrinfo.xres, (int) scrinfo.yres,
-		(int) scrinfo.xres_virtual, (int) scrinfo.yres_virtual,
-		(int) scrinfo.xoffset, (int) scrinfo.yoffset,
+		(int) xres, (int) yres,
+		(int) xres_virtual, (int) yres_virtual,
+		(int) xoffset, (int) yoffset,
 		(int) scrinfo.bits_per_pixel);
 
 	fbmmap = mmap(NULL, buffers * pixels * bytespp,
@@ -260,19 +286,22 @@ init_fb_server(int argc, char **argv)
 {
 	pr_info("Initializing server...\n");
 
+	fb = calloc(xres * yres, scrinfo.bits_per_pixel / 2);
+	assert(fb != NULL);
+
 	/* Allocate the VNC server buffer to be managed (not manipulated) by 
 	 * libvncserver. */
 	vncbuf =
-	    calloc(scrinfo.xres * scrinfo.yres, scrinfo.bits_per_pixel / 2);
+	    calloc(xres * yres, scrinfo.bits_per_pixel / 2);
 	assert(vncbuf != NULL);
 
 	/* Allocate the comparison buffer for detecting drawing updates from frame
 	 * to frame. */
-	fbbuf = calloc(scrinfo.xres * scrinfo.yres, scrinfo.bits_per_pixel / 2);
+	fbbuf = calloc(xres * yres, scrinfo.bits_per_pixel / 2);
 	assert(fbbuf != NULL);
 
 	/* FIXME: This assumes scrinfo.bits_per_pixel is 16. */
-	vncscr = rfbGetScreen(&argc, argv, scrinfo.xres, scrinfo.yres, 5,	/* bits per sample */
+	vncscr = rfbGetScreen(&argc, argv, xres, yres, 5,	/* bits per sample */
 			      2,	/* samples per pixel */
 			      2 /* bytes/sample */ );
 
@@ -290,7 +319,7 @@ init_fb_server(int argc, char **argv)
 	rfbInitServer(vncscr);
 
 	/* Mark as dirty since we haven't sent any updates at all yet. */
-	rfbMarkRectAsModified(vncscr, 0, 0, scrinfo.xres, scrinfo.yres);
+	rfbMarkRectAsModified(vncscr, 0, 0, xres, yres);
 
 	/* Bit shifts */
 	varblock.r_offset = scrinfo.red.offset + scrinfo.red.length - 5;
@@ -321,7 +350,7 @@ static int
 keysym2scancode(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 {
 	int scancode = 0;
-	(void) down;
+	(void)down;
 
 	int code = (int) key;
 	if (code >= '0' && code <= '9') {
@@ -447,9 +476,12 @@ injectTouchEvent(int down, int x, int y)
 
 	// Re-calculate the final x and y if xmax/ymax are specified
 	if (xmax)
-		x = xmin + (x * (xmax - xmin)) / (scrinfo.xres);
+		x = xmin + (x * (xmax - xmin)) / (xres);
 	if (ymax)
-		y = ymin + (y * (ymax - ymin)) / (scrinfo.yres);
+		y = ymin + (y * (ymax - ymin)) / (yres);
+
+	if (rotation == 1)
+		y = ymax - y;
 
 	memset(&ev, 0, sizeof (ev));
 
@@ -492,8 +524,6 @@ injectTouchEvent(int down, int x, int y)
 static void
 ptrevent(int buttonMask, int x, int y, rfbClientPtr cl)
 {
-	(void) cl;
-
 	/* Indicates either pointer movement or a pointer button press or release. The pointer is
 	   now at (x-position, y-position), and the current state of buttons 1 to 8 are represented
 	   by bits 0 to 7 of button-mask respectively, 0 meaning up, 1 meaning down (pressed).
@@ -503,6 +533,8 @@ ptrevent(int buttonMask, int x, int y, rfbClientPtr cl)
 	   a press and release of button 5. 
 	   From: http://www.vislab.usyd.edu.au/blogs/index.php/2009/05/22/an-headerless-indexed-protocol-for-input-1?blog=61 */
 
+	(void)cl;
+
 	pr_vdebug("Got ptrevent: %04x (x=%d, y=%d)\n", buttonMask, x, y);
 	if (buttonMask & 1) {
 		// Simulate left mouse event as touch event
@@ -511,16 +543,6 @@ ptrevent(int buttonMask, int x, int y, rfbClientPtr cl)
 	}
 }
 
-static int
-get_framebuffer_yoffset()
-{
-	if (ioctl(fbfd, FBIOGET_VSCREENINFO, &scrinfo) < 0) {
-		pr_err("failed to get virtual screen info\n");
-		return -1;
-	}
-
-	return scrinfo.yoffset;
-}
 
 #define PIXEL_FB_TO_RFB(p,r,g,b) \
 	((p >> r) & 0x1f001f) | \
@@ -533,25 +555,57 @@ update_screen(void)
 	unsigned int *f, *c, *r;
 	int x, y, y_virtual;
 
+	int i, j, w = scrinfo.xres, h = scrinfo.yres;
+	for (j = 0; j < h; j++) {
+		for (i = 0; i < w; i++) {
+			switch (rotation) {
+				case 0:
+					fb = fbmmap;
+					break;
+				case 1:
+					//rfbRotate
+					fb[(h - 1 - j + i * h)] = fbmmap[i + j * w];
+					break;
+				case 2:
+					//rfbRotateHundredAndEighty
+					fb[((w - 1 - i) + (h - 1 - j) * w)] = fbmmap[i + j * w];
+					break;
+				case 3:
+					//rfbRotateCounterClockwise
+					fb[(j + (w - 1 - i) * h)] = fbmmap[i + j * w];
+					break;
+				case 4:
+					//rfbFlipHorizontally
+					fb[((w - 1 - i) + j * w)] = fbmmap[i + j * w];
+					break;
+				case 5:
+					//rfbFlipVertically
+					fb[(i + (h - 1 - j) * w)] = fbmmap[i + j * w];
+					break;
+			}
+		}
+	}
+
+
 	/* get virtual screen info */
-	y_virtual = get_framebuffer_yoffset();
+	y_virtual = yoffset;
 	if (y_virtual < 0)
 		y_virtual = 0;	/* no info, have to assume front buffer */
 
 	varblock.min_x = varblock.min_y = INT_MAX;
 	varblock.max_x = varblock.max_y = -1;
 
-	f = (unsigned int *) fbmmap;	/* -> framebuffer         */
+	f = (unsigned int *) fb;	/* -> framebuffer         */
 	c = (unsigned int *) fbbuf;	/* -> compare framebuffer */
 	r = (unsigned int *) vncbuf;	/* -> remote framebuffer  */
 
 	/* jump to right virtual screen */
-	f += y_virtual * scrinfo.xres / varblock.pixels_per_int;
+	f += y_virtual * xres / varblock.pixels_per_int;
 
-	for (y = 0; y < (int) scrinfo.yres; y++) {
+	for (y = 0; y < (int) yres; y++) {
 		/* Compare every 2 pixels at a time, assuming that changes are
 		 * likely in pairs. */
-		for (x = 0; x < (int) scrinfo.xres;
+		for (x = 0; x < (int) xres;
 		     x += varblock.pixels_per_int) {
 			unsigned int pixel = *f;
 
@@ -609,10 +663,11 @@ update_screen(void)
 void
 blank_framebuffer()
 {
-	int i, n = scrinfo.xres * scrinfo.yres / varblock.pixels_per_int;
+	int i, n = xres * yres / varblock.pixels_per_int;
 	for (i = 0; i < n; i++) {
 		((int *) vncbuf)[i] = 0;
 		((int *) fbbuf)[i] = 0;
+		((int *) fb)[i] = 0;
 	}
 }
 
@@ -625,7 +680,8 @@ print_usage(char **argv)
 	pr_info("%s [-k device] [-t device] [-h]\n"
 		"-k device: keyboard device node, default is %s\n"
 		"-t device: touch device node, default is %s\n"
-		"-h : print this help\n", APPNAME, KBD_DEVICE, TOUCH_DEVICE);
+		"-r rotation: rotate 0-5 (0,90,180,270,flibh,flipv) default is %s\n"
+		"-h : print this help\n", APPNAME, KBD_DEVICE, TOUCH_DEVICE, "0");
 }
 
 int
@@ -708,6 +764,9 @@ sigint_handler(int arg)
 	if (vncbuf)
 		free(vncbuf);
 
+	if (fb)
+		free(fb);
+
 	rfbScreenCleanup(vncscr);
 
 	pr_err("<break> exit.\n");
@@ -737,6 +796,10 @@ main(int argc, char **argv)
 					i++;
 					strcpy(TOUCH_DEVICE, argv[i]);
 					break;
+				case 'r':
+					i++;
+					rotation = atoi(argv[i]);
+					break;
 				}
 			}
 			i++;
@@ -757,8 +820,8 @@ main(int argc, char **argv)
 	}
 
 	pr_info("Initializing Framebuffer VNC server:\n");
-	pr_info("	width:  %d\n", (int) scrinfo.xres);
-	pr_info("	height: %d\n", (int) scrinfo.yres);
+	pr_info("	width:  %d\n", (int) yres);
+	pr_info("	height: %d\n", (int) xres);
 	pr_info("	bpp:    %d\n", (int) scrinfo.bits_per_pixel);
 	pr_info("	port:   %d\n", (int) VNC_PORT);
 	init_fb_server(argc, argv);
